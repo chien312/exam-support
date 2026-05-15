@@ -946,6 +946,7 @@
         // ==================== 諮詢預約（含即時時段監聽）====================
         var selectedTimeSlot = null;
         var timeSlotsUnsubscribe = null;
+        var cachedBookedSlots = {};  // onSnapshot 的快取，selectTimeSlot 直接用，不再查 Firestore
 
         function resetConsultationForm() {
             document.getElementById('consultation-form').reset();
@@ -964,11 +965,11 @@
             timeSlotsUnsubscribe = db.collection('consultations')
                 .where('status', 'in', ['待確認', '已確認'])
                 .onSnapshot(function(snapshot) {
-                    var bookedSlots = {};
+                    cachedBookedSlots = {};
                     snapshot.forEach(function(doc) {
-                        bookedSlots[doc.data().timeSlot] = true;
+                        cachedBookedSlots[doc.data().timeSlot] = true;
                     });
-                    renderTimeSlots(bookedSlots);
+                    renderTimeSlots(cachedBookedSlots);
                 }, function(err) {
                     console.error('時段監聽錯誤', err);
                     renderTimeSlots({});
@@ -989,15 +990,7 @@
         function selectTimeSlot(slot) {
             selectedTimeSlot = slot;
             document.getElementById('selected-time-slot').value = slot;
-            // 重新渲染時段（不重新查詢，只更新 selected 樣式）
-            db.collection('consultations')
-                .where('status', 'in', ['待確認', '已確認'])
-                .get()
-                .then(function(snapshot) {
-                    var bookedSlots = {};
-                    snapshot.forEach(function(doc) { bookedSlots[doc.data().timeSlot] = true; });
-                    renderTimeSlots(bookedSlots);
-                });
+            renderTimeSlots(cachedBookedSlots);  // 直接用快取，不查 Firestore
         }
 
         async function submitConsultation(event) {
@@ -1015,26 +1008,21 @@
             if (!timeSlot)    { errorEl.textContent = '請選擇預約時段。'; errorEl.style.display = 'block'; return; }
             if (!name || !phone) { errorEl.textContent = '請填寫所有必填欄位。'; errorEl.style.display = 'block'; return; }
 
-            // 送出前再次確認時段未被搶走
+            // 用快取確認時段是否已被佔用（不發額外請求）
+            if (cachedBookedSlots[timeSlot]) {
+                errorEl.textContent = '此時段剛剛已被預約，請重新選擇時段。';
+                errorEl.style.display = 'block';
+                selectedTimeSlot = null;
+                document.getElementById('selected-time-slot').value = '';
+                renderTimeSlots(cachedBookedSlots);
+                return;
+            }
+
             var submitBtn = event.target.querySelector('button[type="submit"]');
             submitBtn.disabled = true;
             submitBtn.textContent = '送出中…';
 
             try {
-                var snap = await db.collection('consultations')
-                    .where('timeSlot', '==', timeSlot)
-                    .where('status', 'in', ['待確認', '已確認'])
-                    .get();
-
-                if (!snap.empty) {
-                    errorEl.textContent = '此時段剛剛已被預約，請重新選擇時段。';
-                    errorEl.style.display = 'block';
-                    selectedTimeSlot = null;
-                    document.getElementById('selected-time-slot').value = '';
-                    startTimeSlotsListener();
-                    return;
-                }
-
                 await db.collection('consultations').add({
                     bookingNumber: generateBookingNumber(),
                     name: name,
