@@ -823,20 +823,20 @@
         <div class="admin-container">
             <div class="admin-card">
                 <div class="filters">
-                    <select id="consultation-consultant-filter" onchange="renderConsultations()">
+                    <select id="consultation-consultant-filter" onchange="filterAndRenderTable()">
                         <option value="">全部諮詢對象</option>
                         <option value="北一學姐">北一學姐</option>
                         <option value="建中學長">建中學長</option>
                         <option value="成功學長">成功學長</option>
                     </select>
-                    <select id="consultation-status-filter" onchange="renderConsultations()">
+                    <select id="consultation-status-filter" onchange="filterAndRenderTable()">
                         <option value="">全部狀態</option>
                         <option value="待確認">待確認</option>
                         <option value="已確認">已確認</option>
                         <option value="已完成">已完成</option>
                         <option value="已取消">已取消</option>
                     </select>
-                    <input type="text" id="consultation-search" placeholder="搜尋姓名或電話" oninput="renderConsultations()">
+                    <input type="text" id="consultation-search" placeholder="搜尋姓名或電話" oninput="filterAndRenderTable()">
                     <button class="btn btn-small btn-primary" onclick="exportConsultations()">📥 匯出 CSV</button>
                     <button class="btn btn-small btn-danger" onclick="clearAllConsultations()">🗑️ 清空所有預約</button>
                 </div>
@@ -874,84 +874,64 @@
         </div>
     </div>
 
-    <!-- 後台入口按鈕 -->
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 
     <script>
-        // ==================== 資料儲存 ====================
-        const STORAGE_KEYS = {
-            CONSULTATIONS: 'exam_support_consultations',
-            ADMIN_LOGGED_IN: 'exam_support_admin_logged_in'
+        // ==================== Firebase 初始化 ====================
+        const firebaseConfig = {
+            apiKey: "AIzaSyBLCosxOkwB8l88A46oX4YR0Ov53RNRaWs",
+            authDomain: "examsupport-051617.firebaseapp.com",
+            projectId: "examsupport-051617",
+            storageBucket: "examsupport-051617.firebasestorage.app",
+            messagingSenderId: "201286098633",
+            appId: "1:201286098633:web:e652a3247135bef449b718"
         };
-
-        const ADMIN_CREDENTIALS = {
-            username: 'niniice',
-            password: '08080808'
-        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        // ==================== 常數設定 ====================
+        const ADMIN_CREDENTIALS = { username: 'niniice', password: '08080808' };
+        const ADMIN_KEY = 'exam_support_admin_logged_in';
 
         // 時段列表：08:00 ~ 18:30，每 15 分鐘
         const TIME_SLOTS = (function() {
             var slots = [];
-            var totalMinutes = (18 * 60 + 30) - (8 * 60); // 630 分鐘
-            for (var i = 0; i < totalMinutes; i += 15) {
-                var startMin = 8 * 60 + i;
-                var endMin = startMin + 15;
-                var sh = Math.floor(startMin / 60);
-                var sm = startMin % 60;
-                var eh = Math.floor(endMin / 60);
-                var em = endMin % 60;
-                var pad = function(n) { return String(n).padStart(2, '0'); };
-                slots.push(pad(sh) + ':' + pad(sm) + ' - ' + pad(eh) + ':' + pad(em));
+            var pad = function(n) { return String(n).padStart(2, '0'); };
+            for (var i = 0; i < 630; i += 15) {
+                var s = 8 * 60 + i, e = s + 15;
+                slots.push(pad(Math.floor(s/60)) + ':' + pad(s%60) + ' - ' + pad(Math.floor(e/60)) + ':' + pad(e%60));
             }
             return slots;
         })();
 
         // ==================== 工具函數 ====================
-        function generateId() {
-            return Date.now().toString(36) + Math.random().toString(36).substr(2);
-        }
-
         function generateBookingNumber() {
-            var date = new Date();
-            var dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
+            var d = new Date();
+            var dateStr = d.toISOString().slice(0, 10).replace(/-/g, '');
             var random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
             return 'CON' + dateStr + random;
         }
 
-        function formatDateTime(dateStr) {
-            var date = new Date(dateStr);
+        function formatDateTime(val) {
+            var date = (val && val.toDate) ? val.toDate() : new Date(val);
             return date.toLocaleString('zh-TW', {
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit'
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit'
             });
-        }
-
-        function getConsultations() {
-            var data = localStorage.getItem(STORAGE_KEYS.CONSULTATIONS);
-            return data ? JSON.parse(data) : [];
-        }
-
-        function saveConsultations(consultations) {
-            localStorage.setItem(STORAGE_KEYS.CONSULTATIONS, JSON.stringify(consultations));
         }
 
         // ==================== 頁面導覽 ====================
         function navigateTo(page) {
             if (page.startsWith('admin') && page !== 'admin-login') {
-                if (!localStorage.getItem(STORAGE_KEYS.ADMIN_LOGGED_IN)) {
+                if (!localStorage.getItem(ADMIN_KEY)) {
                     navigateTo('admin-login');
                     return;
                 }
             }
-
             document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
-
             var targetPage = document.getElementById('page-' + page);
-            if (targetPage) {
-                targetPage.classList.add('active');
-            }
+            if (targetPage) targetPage.classList.add('active');
 
             if (page === 'admin') {
                 updateAdminStats();
@@ -960,54 +940,68 @@
             } else if (page === 'consultation') {
                 resetConsultationForm();
             }
-
             window.scrollTo(0, 0);
         }
 
-        // ==================== 諮詢預約 ====================
+        // ==================== 諮詢預約（含即時時段監聽）====================
         var selectedTimeSlot = null;
+        var timeSlotsUnsubscribe = null;
 
         function resetConsultationForm() {
             document.getElementById('consultation-form').reset();
             document.getElementById('consultation-error').style.display = 'none';
             document.getElementById('selected-time-slot').value = '';
             selectedTimeSlot = null;
-            updateTimeSlots();
+            startTimeSlotsListener();
         }
 
-        function updateTimeSlots() {
+        // 即時監聽 Firestore，只要有人預約時段立刻反映在畫面上
+        function startTimeSlotsListener() {
+            if (timeSlotsUnsubscribe) timeSlotsUnsubscribe();
+            document.getElementById('time-slots-container').innerHTML =
+                '<p style="color:#999;grid-column:1/-1;text-align:center;">載入時段中…</p>';
+
+            timeSlotsUnsubscribe = db.collection('consultations')
+                .where('status', 'in', ['待確認', '已確認'])
+                .onSnapshot(function(snapshot) {
+                    var bookedSlots = {};
+                    snapshot.forEach(function(doc) {
+                        bookedSlots[doc.data().timeSlot] = true;
+                    });
+                    renderTimeSlots(bookedSlots);
+                }, function(err) {
+                    console.error('時段監聽錯誤', err);
+                    renderTimeSlots({});
+                });
+        }
+
+        function renderTimeSlots(bookedSlots) {
             var container = document.getElementById('time-slots-container');
-
-            // 取得所有已預約的時段（勞斯萊斯只有一台，時段全局共用）
-            var consultations = getConsultations();
-            var bookedSlots = {};
-            for (var i = 0; i < consultations.length; i++) {
-                var c = consultations[i];
-                if (c.status === '待確認' || c.status === '已確認') {
-                    bookedSlots[c.timeSlot] = true;
-                }
-            }
-
             container.innerHTML = TIME_SLOTS.map(function(slot) {
-                var isBooked = bookedSlots[slot] === true;
+                var isBooked = !!bookedSlots[slot];
                 var isSelected = selectedTimeSlot === slot;
-                var classes = 'time-slot';
-                if (isBooked) classes += ' disabled';
-                if (isSelected) classes += ' selected';
+                var cls = 'time-slot' + (isBooked ? ' disabled' : '') + (isSelected ? ' selected' : '');
                 var onclick = isBooked ? '' : 'onclick="selectTimeSlot(\'' + slot + '\')"';
-                return '<div class="' + classes + '" ' + onclick + '>' + slot + '</div>';
+                return '<div class="' + cls + '" ' + onclick + '>' + slot + '</div>';
             }).join('');
         }
 
         function selectTimeSlot(slot) {
             selectedTimeSlot = slot;
             document.getElementById('selected-time-slot').value = slot;
-            updateTimeSlots();
+            // 重新渲染時段（不重新查詢，只更新 selected 樣式）
+            db.collection('consultations')
+                .where('status', 'in', ['待確認', '已確認'])
+                .get()
+                .then(function(snapshot) {
+                    var bookedSlots = {};
+                    snapshot.forEach(function(doc) { bookedSlots[doc.data().timeSlot] = true; });
+                    renderTimeSlots(bookedSlots);
+                });
         }
 
-        function submitConsultation(event) {
+        async function submitConsultation(event) {
             event.preventDefault();
-
             var errorEl = document.getElementById('consultation-error');
             errorEl.style.display = 'none';
 
@@ -1017,66 +1011,64 @@
             var phone = document.getElementById('consultation-phone').value.trim();
             var question = document.getElementById('consultation-question').value.trim();
 
-            if (!consultant) {
-                errorEl.textContent = '請選擇諮詢對象。';
+            if (!consultant) { errorEl.textContent = '請選擇諮詢對象。'; errorEl.style.display = 'block'; return; }
+            if (!timeSlot)    { errorEl.textContent = '請選擇預約時段。'; errorEl.style.display = 'block'; return; }
+            if (!name || !phone) { errorEl.textContent = '請填寫所有必填欄位。'; errorEl.style.display = 'block'; return; }
+
+            // 送出前再次確認時段未被搶走
+            var submitBtn = event.target.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+            submitBtn.textContent = '送出中…';
+
+            try {
+                var snap = await db.collection('consultations')
+                    .where('timeSlot', '==', timeSlot)
+                    .where('status', 'in', ['待確認', '已確認'])
+                    .get();
+
+                if (!snap.empty) {
+                    errorEl.textContent = '此時段剛剛已被預約，請重新選擇時段。';
+                    errorEl.style.display = 'block';
+                    selectedTimeSlot = null;
+                    document.getElementById('selected-time-slot').value = '';
+                    startTimeSlotsListener();
+                    return;
+                }
+
+                await db.collection('consultations').add({
+                    bookingNumber: generateBookingNumber(),
+                    name: name,
+                    phone: phone,
+                    consultant: consultant.value,
+                    timeSlot: timeSlot,
+                    question: question,
+                    status: '待確認',
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                });
+
+                if (timeSlotsUnsubscribe) { timeSlotsUnsubscribe(); timeSlotsUnsubscribe = null; }
+                navigateTo('consultation-success');
+
+            } catch(err) {
+                console.error('送出失敗', err);
+                errorEl.textContent = '送出失敗，請稍後再試。';
                 errorEl.style.display = 'block';
-                return;
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '送出諮詢預約';
             }
-
-            if (!timeSlot) {
-                errorEl.textContent = '請選擇預約時段。';
-                errorEl.style.display = 'block';
-                return;
-            }
-
-            if (!name || !phone) {
-                errorEl.textContent = '請填寫所有必填欄位。';
-                errorEl.style.display = 'block';
-                return;
-            }
-
-            // 再次確認時段未被佔用
-            var consultations = getConsultations();
-            var isSlotTaken = consultations.some(function(c) {
-                return c.timeSlot === timeSlot && (c.status === '待確認' || c.status === '已確認');
-            });
-
-            if (isSlotTaken) {
-                errorEl.textContent = '此時段已被預約，請選擇其他時段。';
-                errorEl.style.display = 'block';
-                updateTimeSlots();
-                return;
-            }
-
-            var booking = {
-                id: generateId(),
-                bookingNumber: generateBookingNumber(),
-                name: name,
-                phone: phone,
-                consultant: consultant.value,
-                timeSlot: timeSlot,
-                question: question,
-                status: '待確認',
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-            };
-
-            consultations.push(booking);
-            saveConsultations(consultations);
-
-            navigateTo('consultation-success');
         }
 
         // ==================== 後台登入 ====================
         function adminLogin(event) {
             event.preventDefault();
-
             var username = document.getElementById('admin-username').value;
             var password = document.getElementById('admin-password').value;
             var errorEl = document.getElementById('login-error');
 
             if (username === ADMIN_CREDENTIALS.username && password === ADMIN_CREDENTIALS.password) {
-                localStorage.setItem(STORAGE_KEYS.ADMIN_LOGGED_IN, 'true');
+                localStorage.setItem(ADMIN_KEY, 'true');
                 navigateTo('admin');
             } else {
                 errorEl.textContent = '帳號或密碼錯誤';
@@ -1085,162 +1077,157 @@
         }
 
         function adminLogout() {
-            localStorage.removeItem(STORAGE_KEYS.ADMIN_LOGGED_IN);
+            localStorage.removeItem(ADMIN_KEY);
             navigateTo('consultation');
         }
 
         // ==================== 後台統計 ====================
         function updateAdminStats() {
-            var consultations = getConsultations();
-            document.getElementById('stat-consultations').textContent = consultations.length;
-            document.getElementById('stat-pending').textContent = consultations.filter(function(c) { return c.status === '待確認'; }).length;
-            document.getElementById('stat-completed').textContent = consultations.filter(function(c) { return c.status === '已完成'; }).length;
+            db.collection('consultations').get().then(function(snapshot) {
+                var total = 0, pending = 0, completed = 0;
+                snapshot.forEach(function(doc) {
+                    total++;
+                    var s = doc.data().status;
+                    if (s === '待確認') pending++;
+                    if (s === '已完成') completed++;
+                });
+                document.getElementById('stat-consultations').textContent = total;
+                document.getElementById('stat-pending').textContent = pending;
+                document.getElementById('stat-completed').textContent = completed;
+            });
         }
 
         // ==================== 後台諮詢管理 ====================
+        var allConsultationsCache = [];
+
         function renderConsultations() {
-            var consultations = getConsultations();
+            document.getElementById('consultations-table-body').innerHTML =
+                '<tr><td colspan="8" style="text-align:center;color:#999;">載入中…</td></tr>';
+
+            db.collection('consultations').get().then(function(snapshot) {
+                allConsultationsCache = [];
+                snapshot.forEach(function(doc) {
+                    allConsultationsCache.push(Object.assign({ id: doc.id }, doc.data()));
+                });
+                filterAndRenderTable();
+            });
+        }
+
+        function filterAndRenderTable() {
             var consultantFilter = document.getElementById('consultation-consultant-filter').value;
             var statusFilter = document.getElementById('consultation-status-filter').value;
             var search = document.getElementById('consultation-search').value.toLowerCase();
 
-            var filtered = [];
-            for (var i = 0; i < consultations.length; i++) {
-                var c = consultations[i];
-                if (consultantFilter && c.consultant !== consultantFilter) continue;
-                if (statusFilter && c.status !== statusFilter) continue;
-                if (search && c.name.toLowerCase().indexOf(search) === -1 && c.phone.indexOf(search) === -1) continue;
-                filtered.push(c);
-            }
+            var filtered = allConsultationsCache.filter(function(c) {
+                if (consultantFilter && c.consultant !== consultantFilter) return false;
+                if (statusFilter && c.status !== statusFilter) return false;
+                if (search && c.name.toLowerCase().indexOf(search) === -1 && c.phone.indexOf(search) === -1) return false;
+                return true;
+            });
 
             filtered.sort(function(a, b) { return new Date(b.createdAt) - new Date(a.createdAt); });
 
             var tbody = document.getElementById('consultations-table-body');
-            var html = '';
-
-            for (var j = 0; j < filtered.length; j++) {
-                var co = filtered[j];
-                html += '<tr>';
-                html += '<td>' + co.bookingNumber + '</td>';
-                html += '<td>' + formatDateTime(co.createdAt) + '</td>';
-                html += '<td>' + co.name + '</td>';
-                html += '<td>' + co.phone + '</td>';
-                html += '<td>' + co.consultant + '</td>';
-                html += '<td>' + co.timeSlot + '</td>';
-                html += '<td><span class="status-badge status-' + co.status + '">' + co.status + '</span></td>';
-                html += '<td><div class="action-btns">';
-                html += '<button class="btn btn-small btn-primary" onclick="viewConsultation(\'' + co.id + '\')">查看</button>';
-                if (co.status !== '已完成' && co.status !== '已取消') {
-                    html += '<button class="btn btn-small btn-success" onclick="markCompleted(\'' + co.id + '\')">✅ 完成</button>';
-                }
-                html += '<button class="btn btn-small btn-danger" onclick="deleteConsultation(\'' + co.id + '\')">🗑️ 刪除</button>';
-                html += '</div></td>';
-                html += '</tr>';
-            }
-
             if (filtered.length === 0) {
-                html = '<tr><td colspan="8" style="text-align: center; color: #999;">目前沒有諮詢預約</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;">目前沒有諮詢預約</td></tr>';
+                return;
             }
 
-            tbody.innerHTML = html;
+            tbody.innerHTML = filtered.map(function(co) {
+                var completedBtn = (co.status !== '已完成' && co.status !== '已取消')
+                    ? '<button class="btn btn-small btn-success" onclick="markCompleted(\'' + co.id + '\')">✅ 完成</button>'
+                    : '';
+                return '<tr>'
+                    + '<td>' + co.bookingNumber + '</td>'
+                    + '<td>' + formatDateTime(co.createdAt) + '</td>'
+                    + '<td>' + co.name + '</td>'
+                    + '<td>' + co.phone + '</td>'
+                    + '<td>' + co.consultant + '</td>'
+                    + '<td>' + co.timeSlot + '</td>'
+                    + '<td><span class="status-badge status-' + co.status + '">' + co.status + '</span></td>'
+                    + '<td><div class="action-btns">'
+                    + '<button class="btn btn-small btn-primary" onclick="viewConsultation(\'' + co.id + '\')">查看</button>'
+                    + completedBtn
+                    + '<button class="btn btn-small btn-danger" onclick="deleteConsultation(\'' + co.id + '\')">🗑️ 刪除</button>'
+                    + '</div></td>'
+                    + '</tr>';
+            }).join('');
         }
 
         function viewConsultation(id) {
-            var consultations = getConsultations();
-            var consultation = null;
-            for (var i = 0; i < consultations.length; i++) {
-                if (consultations[i].id === id) { consultation = consultations[i]; break; }
-            }
-            if (!consultation) return;
-
-            var content = document.getElementById('consultation-modal-content');
-            var html = '';
-            html += '<div class="detail-row"><span class="detail-label">預約編號</span><span class="detail-value">' + consultation.bookingNumber + '</span></div>';
-            html += '<div class="detail-row"><span class="detail-label">預約時間</span><span class="detail-value">' + formatDateTime(consultation.createdAt) + '</span></div>';
-            html += '<div class="detail-row"><span class="detail-label">預約姓名</span><span class="detail-value">' + consultation.name + '</span></div>';
-            html += '<div class="detail-row"><span class="detail-label">聯絡電話</span><span class="detail-value">' + consultation.phone + '</span></div>';
-            html += '<div class="detail-row"><span class="detail-label">諮詢對象</span><span class="detail-value">' + consultation.consultant + '</span></div>';
-            html += '<div class="detail-row"><span class="detail-label">預約時段</span><span class="detail-value">' + consultation.timeSlot + '</span></div>';
-            html += '<div class="detail-row"><span class="detail-label">諮詢問題</span><span class="detail-value">' + (consultation.question || '無') + '</span></div>';
-            html += '<div class="detail-row"><span class="detail-label">狀態</span><span class="detail-value"><span class="status-badge status-' + consultation.status + '">' + consultation.status + '</span></span></div>';
-
-            content.innerHTML = html;
+            var co = allConsultationsCache.find(function(c) { return c.id === id; });
+            if (!co) return;
+            var html = ''
+                + '<div class="detail-row"><span class="detail-label">預約編號</span><span class="detail-value">' + co.bookingNumber + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">預約時間</span><span class="detail-value">' + formatDateTime(co.createdAt) + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">預約姓名</span><span class="detail-value">' + co.name + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">聯絡電話</span><span class="detail-value">' + co.phone + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">諮詢對象</span><span class="detail-value">' + co.consultant + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">預約時段</span><span class="detail-value">' + co.timeSlot + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">諮詢問題</span><span class="detail-value">' + (co.question || '無') + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">狀態</span><span class="detail-value"><span class="status-badge status-' + co.status + '">' + co.status + '</span></span></div>';
+            document.getElementById('consultation-modal-content').innerHTML = html;
             document.getElementById('consultation-modal').classList.add('active');
         }
 
         function markCompleted(id) {
-            var consultations = getConsultations();
-            for (var i = 0; i < consultations.length; i++) {
-                if (consultations[i].id === id) {
-                    consultations[i].status = '已完成';
-                    consultations[i].updatedAt = new Date().toISOString();
-                    break;
-                }
-            }
-            saveConsultations(consultations);
-            renderConsultations();
-            updateAdminStats();
+            db.collection('consultations').doc(id).update({
+                status: '已完成',
+                updatedAt: new Date().toISOString()
+            }).then(function() {
+                renderConsultations();
+                updateAdminStats();
+            });
         }
 
         function deleteConsultation(id) {
             if (!confirm('確定刪除此筆預約紀錄？')) return;
-            var consultations = getConsultations();
-            consultations = consultations.filter(function(c) { return c.id !== id; });
-            saveConsultations(consultations);
-            renderConsultations();
-            updateAdminStats();
+            db.collection('consultations').doc(id).delete().then(function() {
+                renderConsultations();
+                updateAdminStats();
+            });
         }
 
         function exportConsultations() {
-            var consultations = getConsultations();
-            if (consultations.length === 0) {
-                alert('沒有諮詢預約可匯出');
-                return;
-            }
-
-            var csv = '﻿';
-            csv += '預約編號,預約時間,預約姓名,聯絡電話,諮詢對象,預約時段,諮詢問題,狀態\n';
-
-            for (var i = 0; i < consultations.length; i++) {
-                var c = consultations[i];
-                csv += '"' + c.bookingNumber + '",';
-                csv += '"' + formatDateTime(c.createdAt) + '",';
-                csv += '"' + c.name + '",';
-                csv += '"' + c.phone + '",';
-                csv += '"' + c.consultant + '",';
-                csv += '"' + c.timeSlot + '",';
-                csv += '"' + (c.question || '').replace(/"/g, '""') + '",';
-                csv += '"' + c.status + '"\n';
-            }
-
-            var date = new Date();
-            var dateStr = date.getFullYear() + String(date.getMonth() + 1).padStart(2, '0') + String(date.getDate()).padStart(2, '0');
-            var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-            var link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = '諮詢預約_' + dateStr + '.csv';
-            link.style.display = 'none';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+            db.collection('consultations').get().then(function(snapshot) {
+                if (snapshot.empty) { alert('沒有諮詢預約可匯出'); return; }
+                var csv = '﻿預約編號,預約時間,預約姓名,聯絡電話,諮詢對象,預約時段,諮詢問題,狀態\n';
+                snapshot.forEach(function(doc) {
+                    var c = doc.data();
+                    csv += '"' + c.bookingNumber + '",'
+                        + '"' + formatDateTime(c.createdAt) + '",'
+                        + '"' + c.name + '",'
+                        + '"' + c.phone + '",'
+                        + '"' + c.consultant + '",'
+                        + '"' + c.timeSlot + '",'
+                        + '"' + (c.question || '').replace(/"/g, '""') + '",'
+                        + '"' + c.status + '"\n';
+                });
+                var d = new Date();
+                var dateStr = d.getFullYear() + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
+                var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                var link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = '諮詢預約_' + dateStr + '.csv';
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            });
         }
 
         function clearAllConsultations() {
-            var consultations = getConsultations();
-            if (consultations.length === 0) {
-                alert('目前沒有任何預約資料。');
-                return;
-            }
-            if (confirm('確定要清空所有 ' + consultations.length + ' 筆預約資料嗎？\n此操作無法復原，建議先匯出 CSV 備份。')) {
-                localStorage.removeItem(STORAGE_KEYS.CONSULTATIONS);
-                var currentPage = document.querySelector('.page.active');
-                if (currentPage && currentPage.id === 'page-admin-consultations') {
+            db.collection('consultations').get().then(function(snapshot) {
+                if (snapshot.empty) { alert('目前沒有任何預約資料。'); return; }
+                if (!confirm('確定要清空所有 ' + snapshot.size + ' 筆預約資料嗎？\n此操作無法復原，建議先匯出 CSV 備份。')) return;
+                var batch = db.batch();
+                snapshot.forEach(function(doc) { batch.delete(doc.ref); });
+                batch.commit().then(function() {
                     renderConsultations();
-                } else {
                     updateAdminStats();
-                }
-                alert('已清空所有預約資料。');
-            }
+                    alert('已清空所有預約資料。');
+                });
+            });
         }
 
         // ==================== Modal ====================
@@ -1249,16 +1236,12 @@
         }
 
         document.addEventListener('click', function(e) {
-            if (e.target.classList.contains('modal')) {
-                e.target.classList.remove('active');
-            }
+            if (e.target.classList.contains('modal')) e.target.classList.remove('active');
         });
 
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
-                document.querySelectorAll('.modal.active').forEach(function(modal) {
-                    modal.classList.remove('active');
-                });
+                document.querySelectorAll('.modal.active').forEach(function(m) { m.classList.remove('active'); });
             }
         });
 
@@ -1280,19 +1263,15 @@
         // ==================== 初始化 ====================
         function handleHash() {
             var hash = window.location.hash.replace('#', '');
-            if (hash === 'admin' || hash === 'admin-login') {
-                navigateTo('admin-login');
-            }
+            if (hash === 'admin' || hash === 'admin-login') navigateTo('admin-login');
         }
 
         window.addEventListener('DOMContentLoaded', function() {
-            updateTimeSlots();
+            startTimeSlotsListener();
             handleHash();
         });
 
-        window.addEventListener('hashchange', function() {
-            handleHash();
-        });
+        window.addEventListener('hashchange', handleHash);
     </script>
 </body>
 </html>
